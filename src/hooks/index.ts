@@ -75,7 +75,7 @@ export function useDashboard(cleanerId: string | undefined) {
       const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd");
       const weekEnd = format(endOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd");
 
-      const [cleanerRes, todayRes, availableRes, weekRes, notifsRes] = await Promise.all([
+      const [cleanerRes, todayRes, availableRes, weekRes, notifsRes] = await Promise.allSettled([
         supabase.from("cleaners").select("first_name, avg_rating, total_jobs, total_earned").eq("id", cleanerId).single(),
         supabase.from("jobs").select("*, customers(name, address, area, has_elevator, has_pets, pet_type)").eq("cleaner_id", cleanerId).eq("scheduled_date", today).in("status", ["accepted", "confirmed", "pending"]).order("start_time"),
         supabase.from("v_available_jobs_with_match").select("*").eq("cleaner_id", cleanerId).order("match_score", { ascending: false }).limit(4),
@@ -84,15 +84,20 @@ export function useDashboard(cleanerId: string | undefined) {
       ]);
 
       // Calculate week stats
-      const weekJobs = weekRes.data || [];
-      const totalEarned = weekJobs.reduce((s, j) => s + j.pay_amount, 0);
+      const cleaner = cleanerRes.status === "fulfilled" ? cleanerRes.value.data : null;
+      const todayJobs = todayRes.status === "fulfilled" ? (todayRes.value.data || []) : [];
+      const available = availableRes.status === "fulfilled" ? (availableRes.value.data || []) : [];
+      const weekJobs = weekRes.status === "fulfilled" ? (weekRes.value.data || []) : [];
+      const notifs = notifsRes.status === "fulfilled" ? (notifsRes.value.data || []) : [];
+
+      const totalEarned = weekJobs.reduce((s, j) => s + (j.pay_amount || 0), 0);
       const totalHours = weekJobs.reduce((s, j) => {
-        const [sh, sm] = j.start_time.split(":").map(Number);
-        const [eh, em] = j.end_time.split(":").map(Number);
+        const [sh, sm] = (j.start_time || "0:0").split(":").map(Number);
+        const [eh, em] = (j.end_time || "0:0").split(":").map(Number);
         return s + (eh + em / 60) - (sh + sm / 60);
       }, 0);
 
-      const weekStats: WeekStats = {
+      const weekStats = {
         earned: totalEarned,
         jobs: weekJobs.length,
         hours: Math.round(totalHours * 10) / 10,
@@ -100,12 +105,12 @@ export function useDashboard(cleanerId: string | undefined) {
       };
 
       setData({
-        cleaner: cleanerRes.data!,
-        today_jobs: (todayRes.data || []) as any,
-        available_jobs: (availableRes.data || []) as MatchedJob[],
+        cleaner: cleaner || { first_name: "Städare", avg_rating: 0, total_jobs: 0, total_earned: 0 },
+        today_jobs: todayJobs,
+        available_jobs: available,
         week_stats: weekStats,
-        notifications: (notifsRes.data || []) as Notification[],
-        unread_count: (notifsRes.data || []).filter((n: any) => !n.read).length,
+        notifications: notifs,
+        unread_count: notifs.filter((n) => !n.read).length,
       });
       setError(null);
     } catch (err: any) {
